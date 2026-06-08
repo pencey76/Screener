@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import requests
 import io
 import time
@@ -36,43 +37,53 @@ if check_password():
         try: st.image("logo.jpg", width=200)
         except: st.write("Logo nicht gefunden.")
     with col2:
-        st.title("📊 AktienScreener by Christoph Winkelmann")
-        st.markdown("Copyright © Christoph Winkelmann | Profi-Analyse & Chart-Dashboard")
+        st.title("📊 der AktienScreener von Chris Winkelmann")
+        st.markdown("Copyright © Chris Winkelmann | Profi-Analyse & Chart-Dashboard")
 
     # DOKUMENTATION
     with st.expander("ℹ️ Über den Screener (Methodik & Kriterien)", expanded=False):
         st.markdown("""
         ### 1. Daten-Universum & Marktabdeckung
-        Der Screener analysiert ein breites Spektrum von über 750 Titeln:
-        - **USA (S&P 500 & Nasdaq-100):** Fokus auf die liquidesten Blue-Chips und Tech-Werte.
-        - **Deutschland (DAX, MDAX, SDAX):** Umfassende Abdeckung, von Schwergewichten bis zu dynamischen Nebenwerten.
+        Der Screener analysiert über 750 Titel:
+        - **USA:** S&P 500 & Nasdaq-100 (Blue-Chips & Tech-Werte).
+        - **Deutschland:** DAX, MDAX, SDAX.
         
         ### 2. Screening-Kriterien
-        - **🚀 Breakout:** Der aktuelle Kurs übersteigt das Hoch der letzten 20 Handelstage.
-        - **💥 Volumen-Spike:** Das heutige Handelsvolumen liegt mindestens 50 % über dem 20-Tage-Durchschnitt.
+        - **🚀 Breakout:** Kurs übersteigt das 20-Tage-Hoch.
+        - **💥 Volumen-Spike:** Volumen liegt > 50 % über dem 20-Tage-Schnitt.
+        
+        ### 3. Risiko-Management (ATR)
+        - **Stop Loss:** Wird automatisch auf **1,5x ATR** (Average True Range der letzten 14 Tage) unter den aktuellen Kurs gesetzt.
+        - **Target:** Wird auf **3,0x ATR** über den Kurs gesetzt, was ein CRV (Chance-Risiko-Verhältnis) von 1:2 ergibt.
         """)
 
-    # ROBUSTERER LISTEN-DOWNLOAD MIT FIRMENNAMEN
+    # ROBUSTERER LISTEN-DOWNLOAD (Kugelsicher gegen Wikipedia-Änderungen)
     @st.cache_data(ttl=3600)
     def fetch_tickers():
         tickers_dict = {}
         headers = {'User-Agent': 'Mozilla/5.0'}
         
-        # S&P 500
+        # S&P 500 robust suchen
         try:
-            sp_df = pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers=headers).text), attrs={'id': 'constituents'})[0]
-            sp_dict = dict(zip(sp_df['Symbol'].str.replace('.', '-'), sp_df['Security']))
-            tickers_dict.update(sp_dict)
-        except Exception as e: st.sidebar.warning("S&P 500 Liste konnte nicht geladen werden.")
+            tables = pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers=headers).text))
+            for df in tables:
+                if 'Symbol' in df.columns and 'Security' in df.columns:
+                    sp_dict = dict(zip(df['Symbol'].str.replace('.', '-'), df['Security']))
+                    tickers_dict.update(sp_dict)
+                    break
+        except Exception: st.sidebar.warning("S&P 500 Liste teilweise nicht geladen.")
 
-        # Nasdaq 100
+        # Nasdaq 100 robust suchen
         try:
-            ndq_df = pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/Nasdaq-100', headers=headers).text), attrs={'id': 'constituents'})[0]
-            ndq_dict = dict(zip(ndq_df['Ticker'].str.replace('.', '-'), ndq_df['Company']))
-            tickers_dict.update(ndq_dict)
-        except Exception as e: st.sidebar.warning("Nasdaq Liste konnte nicht geladen werden.")
+            tables = pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/Nasdaq-100', headers=headers).text))
+            for df in tables:
+                if 'Ticker' in df.columns and 'Company' in df.columns:
+                    ndq_dict = dict(zip(df['Ticker'].str.replace('.', '-'), df['Company']))
+                    tickers_dict.update(ndq_dict)
+                    break
+        except Exception: st.sidebar.warning("Nasdaq Liste teilweise nicht geladen.")
 
-        # Deutschland (Fest hinterlegt für maximale Stabilität inkl. Namen)
+        # Deutschland (Fest hinterlegt)
         deutschland = {
             "ADS.DE": "Adidas", "ALV.DE": "Allianz", "BAS.DE": "BASF", "BAYN.DE": "Bayer", "BMW.DE": "BMW", 
             "DBK.DE": "Deutsche Bank", "DHL.DE": "DHL Group", "DTE.DE": "Deutsche Telekom", "EOAN.DE": "E.ON", 
@@ -87,7 +98,7 @@ if check_password():
         tickers_dict.update(deutschland)
         return tickers_dict
 
-    # SCHNELLER SCAN (Erwartet jetzt Tuple aus Ticker und Name)
+    # SCHNELLER SCAN (Inklusive ATR, Stop & Target)
     def scan_ticker(item):
         ticker, name = item
         retries = 2
@@ -97,9 +108,16 @@ if check_password():
                 df = stock.history(period="6mo")
                 if len(df) < 50: return None
                 
+                # Basis-Berechnungen
                 df['Vol_20SMA'] = df['Volume'].rolling(window=20).mean()
                 c_price = df['Close'].iloc[-1]
                 
+                # ATR Berechnung (14 Tage)
+                df['TR'] = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift(1)), abs(df['Low'] - df['Close'].shift(1))))
+                df['ATR'] = df['TR'].rolling(window=14).mean()
+                atr = df['ATR'].iloc[-1]
+                
+                # Setup-Bedingungen
                 breakout = c_price > df['High'].shift(1).rolling(20).max().iloc[-1]
                 vol_spike = df['Volume'].iloc[-1] > (df['Vol_20SMA'].iloc[-1] * 1.5)
                 
@@ -107,10 +125,16 @@ if check_password():
                     signals = ["🚀 Breakout"] if breakout else []
                     if vol_spike: signals.append("💥 Vol-Spike")
                     
+                    # Risiko-Management berechnen
+                    stop_loss = c_price - (1.5 * atr)
+                    target = c_price + (3.0 * atr)
+                    
                     return {
-                        "Ticker": ticker, # Wird im Hintergrund behalten für den Chart
-                        "Aktie": name,    # Wird dem Nutzer angezeigt
+                        "Ticker": ticker, 
+                        "Aktie": name,    
                         "Preis": round(c_price, 2), 
+                        "Stop Loss": round(stop_loss, 2),
+                        "Target": round(target, 2),
                         "Signale": " | ".join(signals), 
                         "Fazit": "🔥 Top Setup" if len(signals) > 1 else "🟢 Interessant"
                     }
@@ -128,11 +152,11 @@ if check_password():
         
     if start_scan:
         tickers_dict = fetch_tickers()
+        st.write(f"Durchsuche {len(tickers_dict)} Aktien...") # Kleine Info, wie viele Werte gescannt werden
         progress_bar = st.progress(0)
         results = []
         
         with ThreadPoolExecutor(max_workers=20) as executor:
-            # Wir übergeben jetzt (Ticker, Name) an den Scanner
             items = list(tickers_dict.items())
             future_to_item = {executor.submit(scan_ticker, item): item for item in items}
             for i, future in enumerate(future_to_item):
@@ -148,20 +172,21 @@ if check_password():
         
         st.markdown("### 🎯 Ergebnisse (Klicke auf eine Zeile für Details)")
         
-        # Die interaktive Tabelle!
         event = st.dataframe(
             df,
             use_container_width=True,
             hide_index=True,
-            on_select="rerun",           # Seite neu laden bei Klick
-            selection_mode="single-row", # Nur eine Zeile gleichzeitig
+            on_select="rerun",           
+            selection_mode="single-row", 
             column_config={
-                "Ticker": None,          # Ticker-Spalte komplett verstecken!
-                "Aktie": st.column_config.TextColumn("Unternehmen", width="medium")
+                "Ticker": None,          # Versteckt den Ticker
+                "Aktie": st.column_config.TextColumn("Unternehmen", width="medium"),
+                "Preis": st.column_config.NumberColumn("Preis", format="%.2f"),
+                "Stop Loss": st.column_config.NumberColumn("Stop Loss", format="%.2f"),
+                "Target": st.column_config.NumberColumn("Target", format="%.2f")
             }
         )
         
-        # Wenn eine Zeile angeklickt wurde:
         if len(event.selection.rows) > 0:
             st.divider()
             selected_idx = event.selection.rows[0]
@@ -198,14 +223,20 @@ if check_password():
                     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], mode='lines', name='EMA 20', line=dict(color='cyan', width=1.5)))
                     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], mode='lines', name='EMA 50', line=dict(color='orange', width=1.5)))
 
-                    fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {selected_name} ({selected_ticker})")
+                    # Horizontale Linien für Stop Loss & Target in den Chart zeichnen
+                    sl = df.iloc[selected_idx]["Stop Loss"]
+                    tg = df.iloc[selected_idx]["Target"]
+                    fig.add_hline(y=sl, line_dash="dash", line_color="red", annotation_text="Stop Loss")
+                    fig.add_hline(y=tg, line_dash="dash", line_color="green", annotation_text="Target")
+
+                    fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {selected_name}")
                     st.plotly_chart(fig, use_container_width=True)
                 except:
                     st.error("Chartdaten konnten aktuell nicht geladen werden.")
         else:
             st.info("👆 Klicke oben in der Tabelle auf eine Aktie, um die Chart-Details zu laden.")
         
-        # Excel Export (wie gehabt)
+        # Excel Export
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             worksheet = writer.book.add_worksheet('Screener Ergebnisse')
