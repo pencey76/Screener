@@ -37,6 +37,7 @@ if check_password():
     def fetch_tickers():
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
+            # Listen abrufen
             sp = [str(t).replace('.', '-') for t in pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers=headers).text), attrs={'id': 'constituents'})[0]['Symbol'].tolist()]
             ndq = [str(t).replace('.', '-') for t in pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/Nasdaq-100', headers=headers).text), attrs={'id': 'constituents'})[0]['Ticker'].tolist()]
             dax = ["ADS.DE", "ALV.DE", "BAS.DE", "BAYN.DE", "BMW.DE", "DBK.DE", "DHL.DE", "DTE.DE", "EOAN.DE", "IFX.DE", "SAP.DE", "SIE.DE", "VOW3.DE", "VNA.DE"]
@@ -53,11 +54,15 @@ if check_password():
             df['Vol_20SMA'] = df['Volume'].rolling(window=20).mean()
             c_price = df['Close'].iloc[-1]
             
-            signals = []
-            if c_price > df['High'].shift(1).rolling(20).max().iloc[-1]: signals.append("🚀 Breakout")
-            if df['Volume'].iloc[-1] > (df['Vol_20SMA'].iloc[-1] * 2): signals.append("💥 Vol-Spike")
+            # --- GELOCKERTE FILTER-LOGIK ---
+            breakout = c_price > df['High'].shift(1).rolling(20).max().iloc[-1]
+            vol_spike = df['Volume'].iloc[-1] > (df['Vol_20SMA'].iloc[-1] * 1.5)
             
-            if signals:
+            if breakout or vol_spike:
+                signals = []
+                if breakout: signals.append("🚀 Breakout")
+                if vol_spike: signals.append("💥 Vol-Spike")
+                
                 return {
                     "Ticker": ticker, "Name": info.get('shortName', ticker)[:20],
                     "KGV": info.get('forwardPE', 'N/A'), "MarketCap (B)": round(info.get('marketCap', 0) / 1e9, 2),
@@ -66,14 +71,14 @@ if check_password():
                 }
         except: return None
 
-    # --- UI BEREICH MIT SESSION STATE ---
+    # --- UI BEREICH ---
     if "results" not in st.session_state:
         st.session_state["results"] = None
 
     if st.button("🚀 Markt jetzt scannen"):
         with st.spinner("Analyse läuft..."):
             tickers = fetch_tickers()
-            with ThreadPoolExecutor(max_workers=20) as executor:
+            with ThreadPoolExecutor(max_workers=10) as executor: # Worker reduziert für mehr Stabilität
                 res = list(filter(None, executor.map(scan_ticker, tickers)))
                 st.session_state["results"] = pd.DataFrame(res)
     
