@@ -37,8 +37,8 @@ if check_password():
         try: st.image("logo.jpg", width=200)
         except: st.write("Logo nicht gefunden.")
     with col2:
-        st.title("📊 der AktienScreener von Chris Winkelmann")
-        st.markdown("Copyright © Chris Winkelmann | Profi-Analyse & Chart-Dashboard")
+        st.title("📊 AktienScreener by Christoph Winkelmann")
+        st.markdown("Copyright © Christoph Winkelmann | Profi-Analyse & Chart-Dashboard")
 
     # DOKUMENTATION
     with st.expander("ℹ️ Über den Screener (Methodik & Kriterien)", expanded=False):
@@ -48,22 +48,22 @@ if check_password():
         - **USA:** S&P 500 & Nasdaq-100 (Blue-Chips & Tech-Werte).
         - **Deutschland:** DAX, MDAX, SDAX.
         
-        ### 2. Screening-Kriterien
+        ### 2. Screening-Kriterien (Trigger)
         - **🚀 Breakout:** Kurs übersteigt das 20-Tage-Hoch.
         - **💥 Volumen-Spike:** Volumen liegt > 50 % über dem 20-Tage-Schnitt.
+        - **✨ Golden Cross:** EMA 50 hat kürzlich den EMA 200 nach oben gekreuzt (Langfristiges Trend-Signal).
+        - **🔄 RSI Reversal:** RSI(14) dreht aus dem überverkauften Bereich (< 30) wieder nach oben.
         
         ### 3. Risiko-Management (ATR)
-        - **Stop Loss:** Wird automatisch auf **1,5x ATR** (Average True Range der letzten 14 Tage) unter den aktuellen Kurs gesetzt.
-        - **Target:** Wird auf **3,0x ATR** über den Kurs gesetzt, was ein CRV (Chance-Risiko-Verhältnis) von 1:2 ergibt.
+        - **Stop Loss:** Wird automatisch auf **1,5x ATR** unter den aktuellen Kurs gesetzt.
+        - **Target:** Wird auf **3,0x ATR** über den Kurs gesetzt (CRV 1:2).
         """)
 
-    # ROBUSTERER LISTEN-DOWNLOAD (Kugelsicher gegen Wikipedia-Änderungen)
     @st.cache_data(ttl=3600)
     def fetch_tickers():
         tickers_dict = {}
         headers = {'User-Agent': 'Mozilla/5.0'}
         
-        # S&P 500 robust suchen
         try:
             tables = pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers=headers).text))
             for df in tables:
@@ -73,7 +73,6 @@ if check_password():
                     break
         except Exception: st.sidebar.warning("S&P 500 Liste teilweise nicht geladen.")
 
-        # Nasdaq 100 robust suchen
         try:
             tables = pd.read_html(io.StringIO(requests.get('https://en.wikipedia.org/wiki/Nasdaq-100', headers=headers).text))
             for df in tables:
@@ -83,7 +82,6 @@ if check_password():
                     break
         except Exception: st.sidebar.warning("Nasdaq Liste teilweise nicht geladen.")
 
-        # Deutschland (Fest hinterlegt)
         deutschland = {
             "ADS.DE": "Adidas", "ALV.DE": "Allianz", "BAS.DE": "BASF", "BAYN.DE": "Bayer", "BMW.DE": "BMW", 
             "DBK.DE": "Deutsche Bank", "DHL.DE": "DHL Group", "DTE.DE": "Deutsche Telekom", "EOAN.DE": "E.ON", 
@@ -98,34 +96,56 @@ if check_password():
         tickers_dict.update(deutschland)
         return tickers_dict
 
-    # SCHNELLER SCAN (Inklusive ATR, Stop & Target)
+    # --- KOMPLETTER SCANNER INKLUSIVE RSI & GOLDEN CROSS ---
     def scan_ticker(item):
         ticker, name = item
         retries = 2
         for attempt in range(retries):
             try:
                 stock = yf.Ticker(ticker)
-                df = stock.history(period="6mo")
-                if len(df) < 50: return None
+                # WICHTIG: 1 Jahr Daten laden, damit der EMA 200 berechnet werden kann!
+                df = stock.history(period="1y") 
+                if len(df) < 200: return None
                 
-                # Basis-Berechnungen
+                # --- Indikatoren berechnen ---
                 df['Vol_20SMA'] = df['Volume'].rolling(window=20).mean()
                 c_price = df['Close'].iloc[-1]
                 
-                # ATR Berechnung (14 Tage)
+                # ATR
                 df['TR'] = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift(1)), abs(df['Low'] - df['Close'].shift(1))))
                 df['ATR'] = df['TR'].rolling(window=14).mean()
                 atr = df['ATR'].iloc[-1]
                 
-                # Setup-Bedingungen
+                # EMAs
+                df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+                df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+                
+                # RSI (vereinfachte Wilder's Methode)
+                delta = df['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                rs = gain / loss
+                df['RSI'] = 100 - (100 / (1 + rs))
+                
+                # --- Setup Bedingungen prüfen ---
                 breakout = c_price > df['High'].shift(1).rolling(20).max().iloc[-1]
                 vol_spike = df['Volume'].iloc[-1] > (df['Vol_20SMA'].iloc[-1] * 1.5)
                 
-                if breakout or vol_spike:
-                    signals = ["🚀 Breakout"] if breakout else []
+                # Golden Cross: EMA 50 ist jetzt über EMA 200, war aber vor 3 Tagen noch drunter
+                golden_cross = (df['EMA_50'].iloc[-1] > df['EMA_200'].iloc[-1]) and (df['EMA_50'].iloc[-3] <= df['EMA_200'].iloc[-3])
+                
+                # RSI Reversal: RSI war gestern unter 30 und ist heute darüber
+                rsi_reversal = (df['RSI'].iloc[-2] < 30) and (df['RSI'].iloc[-1] >= 30)
+                
+                # Wenn auch nur EIN Signal zutrifft, Aktie anzeigen
+                if breakout or vol_spike or golden_cross or rsi_reversal:
+                    signals = []
+                    if breakout: signals.append("🚀 Breakout")
                     if vol_spike: signals.append("💥 Vol-Spike")
+                    if golden_cross: signals.append("✨ Golden Cross")
+                    if rsi_reversal: signals.append("🔄 RSI Reversal")
                     
-                    # Risiko-Management berechnen
+                    # Stop & Target
                     stop_loss = c_price - (1.5 * atr)
                     target = c_price + (3.0 * atr)
                     
@@ -152,7 +172,7 @@ if check_password():
         
     if start_scan:
         tickers_dict = fetch_tickers()
-        st.write(f"Durchsuche {len(tickers_dict)} Aktien...") # Kleine Info, wie viele Werte gescannt werden
+        st.write(f"Durchsuche {len(tickers_dict)} Aktien...") 
         progress_bar = st.progress(0)
         results = []
         
@@ -179,7 +199,7 @@ if check_password():
             on_select="rerun",           
             selection_mode="single-row", 
             column_config={
-                "Ticker": None,          # Versteckt den Ticker
+                "Ticker": None,          
                 "Aktie": st.column_config.TextColumn("Unternehmen", width="medium"),
                 "Preis": st.column_config.NumberColumn("Preis", format="%.2f"),
                 "Stop Loss": st.column_config.NumberColumn("Stop Loss", format="%.2f"),
@@ -207,27 +227,33 @@ if check_password():
                 mcap = info.get('marketCap', 0) if info else 0
                 mcap_bn = f"{round(mcap / 1e9, 2)} Mrd." if mcap else 'N/A'
                 
-                # Fundamentaldaten
                 col_a, col_b, col_c = st.columns(3)
                 col_a.metric("Unternehmen", selected_name[:25])
                 col_b.metric("Erw. KGV", kgv)
                 col_c.metric("Marktkapitalisierung", mcap_bn)
             
-                # Chart
                 try:
-                    df_chart = stock_data.history(period="6mo")
+                    # Chart muss nun auch auf 1y stehen für den EMA 200
+                    df_chart = stock_data.history(period="1y")
                     df_chart['EMA_20'] = df_chart['Close'].ewm(span=20, adjust=False).mean()
                     df_chart['EMA_50'] = df_chart['Close'].ewm(span=50, adjust=False).mean()
+                    df_chart['EMA_200'] = df_chart['Close'].ewm(span=200, adjust=False).mean()
 
                     fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='Kurs')])
+                    
                     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], mode='lines', name='EMA 20', line=dict(color='cyan', width=1.5)))
                     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], mode='lines', name='EMA 50', line=dict(color='orange', width=1.5)))
+                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_200'], mode='lines', name='EMA 200', line=dict(color='white', width=1.5, dash='dot')))
 
-                    # Horizontale Linien für Stop Loss & Target in den Chart zeichnen
                     sl = df.iloc[selected_idx]["Stop Loss"]
                     tg = df.iloc[selected_idx]["Target"]
                     fig.add_hline(y=sl, line_dash="dash", line_color="red", annotation_text="Stop Loss")
                     fig.add_hline(y=tg, line_dash="dash", line_color="green", annotation_text="Target")
+
+                    # Damit der Chart nicht zu gequetscht aussieht, zoomen wir auf die letzten 6 Monate,
+                    # obwohl wir 1 Jahr geladen haben.
+                    last_6_months = df_chart.index[-1] - pd.DateOffset(months=6)
+                    fig.update_xaxes(range=[last_6_months, df_chart.index[-1]])
 
                     fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {selected_name}")
                     st.plotly_chart(fig, use_container_width=True)
@@ -236,7 +262,6 @@ if check_password():
         else:
             st.info("👆 Klicke oben in der Tabelle auf eine Aktie, um die Chart-Details zu laden.")
         
-        # Excel Export
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             worksheet = writer.book.add_worksheet('Screener Ergebnisse')
