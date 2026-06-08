@@ -158,11 +158,9 @@ if check_password():
     # HAUPTBEREICH (Rechts)
     # ==========================================
     if "results" not in st.session_state: st.session_state["results"] = None
-    if "scanned_total" not in st.session_state: st.session_state["scanned_total"] = 0
         
     if start_scan:
         tickers_dict = fetch_tickers()
-        st.session_state["scanned_total"] = len(tickers_dict)
         
         with st.spinner(f"Durchsuche {len(tickers_dict)} Aktien..."):
             progress_bar = st.progress(0)
@@ -180,16 +178,22 @@ if check_password():
     # --- ANZEIGE DER ERGEBNISSE ---
     if st.session_state["results"] is not None:
         df = st.session_state["results"]
+        tickers_dict = fetch_tickers() # Lädt instant aus dem Cache
         
         # 1. KPI DASHBOARD
         st.markdown("### 📈 Markt-Übersicht")
         col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
-        col_kpi1.metric("Gescannt (Universum)", st.session_state["scanned_total"])
+        col_kpi1.metric("Gescannt (Universum)", len(tickers_dict))
         col_kpi2.metric("Signale gefunden", len(df) if not df.empty else 0)
         
         top_setups = len(df[df['Fazit'] == '🔥 Top Setup']) if not df.empty else 0
         col_kpi3.metric("Top Setups 🔥", top_setups)
         
+        # --- NEU: AUFKLAPPBARES UNIVERSUM ---
+        with st.expander("📋 Liste aller gescannten Aktien ansehen"):
+            df_universum = pd.DataFrame(list(tickers_dict.items()), columns=["Ticker", "Unternehmen"])
+            st.dataframe(df_universum, use_container_width=True, hide_index=True)
+            
         st.divider()
         
         if not df.empty:
@@ -239,11 +243,10 @@ if check_password():
                         df_chart['EMA_50'] = df_chart['Close'].ewm(span=50, adjust=False).mean()
                         df_chart['EMA_200'] = df_chart['Close'].ewm(span=200, adjust=False).mean()
 
-                        # 3. PROFI-CHART (SUBPLOTS: Kerzen oben, Volumen unten)
+                        # 3. PROFI-CHART (SUBPLOTS)
                         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                                             vertical_spacing=0.03, row_heights=[0.7, 0.3])
 
-                        # Oben: Kerzen & EMAs
                         fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='Kurs'), row=1, col=1)
                         fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], mode='lines', name='EMA 20', line=dict(color='cyan', width=1.5)), row=1, col=1)
                         fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], mode='lines', name='EMA 50', line=dict(color='orange', width=1.5)), row=1, col=1)
@@ -254,11 +257,9 @@ if check_password():
                         fig.add_hline(y=sl, line_dash="dash", line_color="red", annotation_text="Stop Loss", row=1, col=1)
                         fig.add_hline(y=tg, line_dash="dash", line_color="green", annotation_text="Target", row=1, col=1)
 
-                        # Unten: Volumen-Balken (Grün wenn Close > Open, sonst Rot)
                         colors = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in df_chart.iterrows()]
                         fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'], marker_color=colors, name='Volumen'), row=2, col=1)
 
-                        # Design & Zoom (letzte 6 Monate anzeigen)
                         last_6_months = df_chart.index[-1] - pd.DateOffset(months=6)
                         fig.update_xaxes(range=[last_6_months, df_chart.index[-1]], rangeslider_visible=False)
                         
