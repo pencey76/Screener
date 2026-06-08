@@ -39,7 +39,7 @@ if check_password():
         st.title("📊 AktienScreener by Christoph Winkelmann")
         st.markdown("Copyright © Christoph Winkelmann | Profi-Analyse & Chart-Dashboard")
 
-# SCROLLBARE DOKUMENTATION - Jetzt im nativen Streamlit-Design
+    # DOKUMENTATION
     with st.expander("ℹ️ Über den Screener (Methodik & Kriterien)", expanded=False):
         st.markdown("""
         ### 1. Daten-Universum & Marktabdeckung
@@ -69,41 +69,87 @@ if check_password():
             return list(set(sp + ndq + deutschland))
         except: return ["AAPL", "MSFT", "NVDA"]
 
+    # --- SCHNELLER SCAN (OHNE INFO-ABFRAGE) ---
     def scan_ticker(ticker):
         try:
             stock = yf.Ticker(ticker)
-            info = stock.info
             df = stock.history(period="6mo")
             if len(df) < 50: return None
+            
             df['Vol_20SMA'] = df['Volume'].rolling(window=20).mean()
             c_price = df['Close'].iloc[-1]
+            
             breakout = c_price > df['High'].shift(1).rolling(20).max().iloc[-1]
             vol_spike = df['Volume'].iloc[-1] > (df['Vol_20SMA'].iloc[-1] * 1.5)
+            
             if breakout or vol_spike:
                 signals = ["🚀 Breakout"] if breakout else []
                 if vol_spike: signals.append("💥 Vol-Spike")
-                return {"Ticker": ticker, "Name": info.get('shortName', ticker)[:20], "KGV": info.get('forwardPE', 'N/A'), "MarketCap (B)": round(info.get('marketCap', 0) / 1e9, 2), "Preis": round(c_price, 2), "Signale": " | ".join(signals), "Fazit": "🔥 Top Setup" if len(signals) > 1 else "🟢 Interessant"}
+                
+                return {
+                    "Ticker": ticker, 
+                    "Preis": round(c_price, 2), 
+                    "Signale": " | ".join(signals), 
+                    "Fazit": "🔥 Top Setup" if len(signals) > 1 else "🟢 Interessant"
+                }
         except: return None
 
-    # UI SCAN-BEREICH MIT FORTSCHRITTSBALKEN
+    # --- UI SCAN-BEREICH ---
     if "results" not in st.session_state: st.session_state["results"] = None
+    
     if st.button("🚀 Markt jetzt scannen"):
         tickers = fetch_tickers()
         progress_bar = st.progress(0)
         results = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        
+        with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_ticker = {executor.submit(scan_ticker, t): t for t in tickers}
             for i, future in enumerate(future_to_ticker):
                 res = future.result()
                 if res: results.append(res)
                 progress_bar.progress((i + 1) / len(tickers))
+                
         st.session_state["results"] = pd.DataFrame(results)
     
+    # --- ERGEBNISSE & DEEP DIVE ---
     if st.session_state["results"] is not None and not st.session_state["results"].empty:
         st.dataframe(st.session_state["results"], use_container_width=True, hide_index=True)
-        st.subheader("Chart-Analyse")
-        selected = st.selectbox("Wähle eine Aktie:", st.session_state["results"]['Ticker'].unique())
-        df_chart = yf.Ticker(selected).history(period="6mo")
-        fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'])])
-        fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {selected}")
-        st.plotly_chart(fig, use_container_width=True)
+        
+        st.subheader("Chart & Detail-Analyse")
+        selected = st.selectbox("Wähle eine Aktie für Details:", st.session_state["results"]['Ticker'].unique())
+        
+        if selected:
+            with st.spinner(f"Lade Fundamentaldaten für {selected}..."):
+                stock_data = yf.Ticker(selected)
+                info = stock_data.info
+                name = info.get('shortName', selected)
+                kgv = info.get('forwardPE', 'N/A')
+                mcap = info.get('marketCap', 0)
+                mcap_bn = f"{round(mcap / 1e9, 2)} Mrd." if mcap else 'N/A'
+                
+                # Fundamentaldaten anzeigen
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Unternehmen", name[:25])
+                col_b.metric("Erw. KGV", kgv)
+                col_c.metric("Marktkapitalisierung", mcap_bn)
+            
+                # Chart mit EMA-Linien
+                df_chart = stock_data.history(period="6mo")
+                df_chart['EMA_20'] = df_chart['Close'].ewm(span=20, adjust=False).mean()
+                df_chart['EMA_50'] = df_chart['Close'].ewm(span=50, adjust=False).mean()
+
+                fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='Kurs')])
+                
+                # EMAs hinzufügen
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], mode='lines', name='EMA 20', line=dict(color='cyan', width=1.5)))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], mode='lines', name='EMA 50', line=dict(color='orange', width=1.5)))
+
+                fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {name}")
+                st.plotly_chart(fig, use_container_width=True)
+        
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            worksheet = writer.book.add_worksheet('Screener Ergebnisse')
+            worksheet.write('A1', 'Copyright © Christoph Winkelmann')
+            st.session_state["results"].to_excel(writer, sheet_name='Screener Ergebnisse', index=False, startrow=1)
+        st.download_button("📥 Excel-Bericht", data=buffer, file_name="Screener_Christoph_Winkelmann.xlsx")
