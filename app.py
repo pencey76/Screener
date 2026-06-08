@@ -50,7 +50,6 @@ if check_password():
             df = stock.history(period="6mo")
             if len(df) < 50: return None
             
-            df['RSI'] = 100 - (100 / (1 + (df['Close'].diff().clip(lower=0).rolling(14).mean() / (-df['Close'].diff().clip(upper=0).rolling(14).mean()))))
             df['Vol_20SMA'] = df['Volume'].rolling(window=20).mean()
             c_price = df['Close'].iloc[-1]
             
@@ -67,29 +66,33 @@ if check_password():
                 }
         except: return None
 
-    # UI Bereich
+    # --- UI BEREICH MIT SESSION STATE ---
+    if "results" not in st.session_state:
+        st.session_state["results"] = None
+
     if st.button("🚀 Markt jetzt scannen"):
         with st.spinner("Analyse läuft..."):
             tickers = fetch_tickers()
             with ThreadPoolExecutor(max_workers=20) as executor:
-                results = list(filter(None, executor.map(scan_ticker, tickers)))
+                res = list(filter(None, executor.map(scan_ticker, tickers)))
+                st.session_state["results"] = pd.DataFrame(res)
+    
+    if st.session_state["results"] is not None and not st.session_state["results"].empty:
+        df = st.session_state["results"]
+        st.dataframe(df, use_container_width=True, hide_index=True)
         
-        if results:
-            df = pd.DataFrame(results)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            st.subheader("Chart-Analyse")
-            selected = st.selectbox("Wähle eine Aktie für den Chart:", df['Ticker'].unique())
-            df_chart = yf.Ticker(selected).history(period="6mo")
-            fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'])])
-            fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {selected}")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                worksheet = writer.book.add_worksheet('Screener Ergebnisse')
-                worksheet.write('A1', 'Copyright © Christoph Winkelmann')
-                df.to_excel(writer, sheet_name='Screener Ergebnisse', index=False, startrow=1)
-            st.download_button("📥 Excel-Bericht", data=buffer, file_name="Screener_Christoph_Winkelmann.xlsx")
-        else:
-            st.warning("Keine Signale gefunden.")
+        st.subheader("Chart-Analyse")
+        selected = st.selectbox("Wähle eine Aktie für den Chart:", df['Ticker'].unique())
+        df_chart = yf.Ticker(selected).history(period="6mo")
+        fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'])])
+        fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {selected}")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            worksheet = writer.book.add_worksheet('Screener Ergebnisse')
+            worksheet.write('A1', 'Copyright © Christoph Winkelmann')
+            df.to_excel(writer, sheet_name='Screener Ergebnisse', index=False, startrow=1)
+        st.download_button("📥 Excel-Bericht", data=buffer, file_name="Screener_Christoph_Winkelmann.xlsx")
+    elif st.session_state["results"] is not None:
+        st.warning("Keine Signale gefunden.")
