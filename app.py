@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 import io
+import time  # NEU: Wichtig für den Auto-Retry!
 import plotly.graph_objects as go
 from concurrent.futures import ThreadPoolExecutor
 
@@ -36,8 +37,8 @@ if check_password():
         try: st.image("logo.jpg", width=200)
         except: st.write("Logo nicht gefunden.")
     with col2:
-        st.title("📊 AktienScreener by Christoph Winkelmann")
-        st.markdown("Copyright © Christoph Winkelmann | Profi-Analyse & Chart-Dashboard")
+        st.title("📊 Der AktienScreener von Chris Winkelmann")
+        st.markdown("Copyright © ChrisWinkelmann | Profi-Analyse & Chart-Dashboard")
 
     # DOKUMENTATION
     with st.expander("ℹ️ Über den Screener (Methodik & Kriterien)", expanded=False):
@@ -69,30 +70,38 @@ if check_password():
             return list(set(sp + ndq + deutschland))
         except: return ["AAPL", "MSFT", "NVDA"]
 
-    # --- SCHNELLER SCAN (OHNE INFO-ABFRAGE) ---
+    # --- SCHNELLER SCAN MIT AUTO-RETRY ---
     def scan_ticker(ticker):
-        try:
-            stock = yf.Ticker(ticker)
-            df = stock.history(period="6mo")
-            if len(df) < 50: return None
-            
-            df['Vol_20SMA'] = df['Volume'].rolling(window=20).mean()
-            c_price = df['Close'].iloc[-1]
-            
-            breakout = c_price > df['High'].shift(1).rolling(20).max().iloc[-1]
-            vol_spike = df['Volume'].iloc[-1] > (df['Vol_20SMA'].iloc[-1] * 1.5)
-            
-            if breakout or vol_spike:
-                signals = ["🚀 Breakout"] if breakout else []
-                if vol_spike: signals.append("💥 Vol-Spike")
+        retries = 2 # Wenn Yahoo zickt, probieren wir es bis zu 2 Mal
+        for attempt in range(retries):
+            try:
+                stock = yf.Ticker(ticker)
+                df = stock.history(period="6mo")
+                if len(df) < 50: return None
                 
-                return {
-                    "Ticker": ticker, 
-                    "Preis": round(c_price, 2), 
-                    "Signale": " | ".join(signals), 
-                    "Fazit": "🔥 Top Setup" if len(signals) > 1 else "🟢 Interessant"
-                }
-        except: return None
+                df['Vol_20SMA'] = df['Volume'].rolling(window=20).mean()
+                c_price = df['Close'].iloc[-1]
+                
+                breakout = c_price > df['High'].shift(1).rolling(20).max().iloc[-1]
+                vol_spike = df['Volume'].iloc[-1] > (df['Vol_20SMA'].iloc[-1] * 1.5)
+                
+                if breakout or vol_spike:
+                    signals = ["🚀 Breakout"] if breakout else []
+                    if vol_spike: signals.append("💥 Vol-Spike")
+                    
+                    return {
+                        "Ticker": ticker, 
+                        "Preis": round(c_price, 2), 
+                        "Signale": " | ".join(signals), 
+                        "Fazit": "🔥 Top Setup" if len(signals) > 1 else "🟢 Interessant"
+                    }
+                # Wenn kein Fehler auftritt, aber einfach kein Signal da ist -> abbrechen
+                return None 
+            except Exception:
+                if attempt < retries - 1:
+                    time.sleep(1) # 1 Sekunde durchatmen, dann nächster Versuch
+                else:
+                    return None
 
     # --- UI SCAN-BEREICH ---
     if "results" not in st.session_state: st.session_state["results"] = None
@@ -121,10 +130,19 @@ if check_password():
         if selected:
             with st.spinner(f"Lade Fundamentaldaten für {selected}..."):
                 stock_data = yf.Ticker(selected)
-                info = stock_data.info
-                name = info.get('shortName', selected)
-                kgv = info.get('forwardPE', 'N/A')
-                mcap = info.get('marketCap', 0)
+                
+                # Auto-Retry auch für die Fundamentaldaten
+                info = {}
+                for attempt in range(3):
+                    try:
+                        info = stock_data.info
+                        if info: break
+                    except:
+                        time.sleep(1)
+                
+                name = info.get('shortName', selected) if info else selected
+                kgv = info.get('forwardPE', 'N/A') if info else 'N/A'
+                mcap = info.get('marketCap', 0) if info else 0
                 mcap_bn = f"{round(mcap / 1e9, 2)} Mrd." if mcap else 'N/A'
                 
                 # Fundamentaldaten anzeigen
@@ -134,18 +152,20 @@ if check_password():
                 col_c.metric("Marktkapitalisierung", mcap_bn)
             
                 # Chart mit EMA-Linien
-                df_chart = stock_data.history(period="6mo")
-                df_chart['EMA_20'] = df_chart['Close'].ewm(span=20, adjust=False).mean()
-                df_chart['EMA_50'] = df_chart['Close'].ewm(span=50, adjust=False).mean()
+                try:
+                    df_chart = stock_data.history(period="6mo")
+                    df_chart['EMA_20'] = df_chart['Close'].ewm(span=20, adjust=False).mean()
+                    df_chart['EMA_50'] = df_chart['Close'].ewm(span=50, adjust=False).mean()
 
-                fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='Kurs')])
-                
-                # EMAs hinzufügen
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], mode='lines', name='EMA 20', line=dict(color='cyan', width=1.5)))
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], mode='lines', name='EMA 50', line=dict(color='orange', width=1.5)))
+                    fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='Kurs')])
+                    
+                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], mode='lines', name='EMA 20', line=dict(color='cyan', width=1.5)))
+                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], mode='lines', name='EMA 50', line=dict(color='orange', width=1.5)))
 
-                fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {name}")
-                st.plotly_chart(fig, use_container_width=True)
+                    fig.update_layout(template="plotly_dark", title=f"Chartverlauf: {name}")
+                    st.plotly_chart(fig, use_container_width=True)
+                except:
+                    st.error("Chartdaten konnten aktuell nicht geladen werden. Bitte später erneut versuchen.")
         
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
