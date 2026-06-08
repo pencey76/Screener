@@ -39,28 +39,25 @@ if check_password():
         st.title("📊 AktienScreener by Christoph Winkelmann")
         st.markdown("Copyright © Christoph Winkelmann | Profi-Analyse & Chart-Dashboard")
 
-    # SCROLLBARE DOKUMENTATION
+# SCROLLBARE DOKUMENTATION - Jetzt im nativen Streamlit-Design
     with st.expander("ℹ️ Über den Screener (Methodik & Kriterien)", expanded=False):
         st.markdown("""
-        <div style="height: 300px; overflow-y: scroll;">
-        ### 1. Universum
-        Der Screener durchsucht ca. 750 Titel aus:
-        - **S&P 500:** US-Marktbreite.
-        - **Nasdaq-100:** Tech- & Wachstumsfokus.
-        - **DAX, MDAX, SDAX:** Umfassende Auswahl deutscher Unternehmen.
+        ### 1. Daten-Universum & Marktabdeckung
+        Der Screener analysiert ein breites Spektrum von über 750 Titeln, um eine ausgewogene Mischung aus Stabilität und Wachstumschancen zu gewährleisten:
+        - **USA (S&P 500 & Nasdaq-100):** Fokus auf die liquidesten Blue-Chips und die führenden Technologie-Wachstumswerte.
+        - **Deutschland (DAX, MDAX, SDAX):** Umfassende Abdeckung des deutschen Marktes, von den Schwergewichten bis zu den dynamischen Nebenwerten.
         
         ### 2. Screening-Kriterien
-        - **🚀 Breakout:** Der aktuelle Kurs übersteigt das 20-Tage-Hoch. Ein klassisches Momentum-Signal.
-        - **💥 Volumen-Spike:** Das Handelsvolumen liegt 50% über dem 20-Tage-Schnitt. Bestätigung durch institutionelles Interesse.
+        - **🚀 Breakout:** Der aktuelle Kurs übersteigt das Hoch der letzten 20 Handelstage. Dieses Signal identifiziert Titel, die aus einer Konsolidierungsphase nach oben ausbrechen und relative Stärke zeigen.
+        - **💥 Volumen-Spike:** Das heutige Handelsvolumen liegt mindestens 50 % über dem gleitenden 20-Tage-Durchschnitt. Dies dient als Bestätigung für erhöhtes institutionelles Interesse am aktuellen Preisniveau.
         
         ### 3. Fazit-Logik
-        - **🟢 Interessant:** Eines der Kriterien erfüllt.
-        - **🔥 Top Setup:** Beide Kriterien (Breakout + Volumen) gleichzeitig erfüllt.
+        - **🟢 Interessant:** Mindestens eines der beiden technischen Kriterien wurde erfüllt. Ein Kandidat für die Watchlist.
+        - **🔥 Top Setup:** Beide Kriterien (Breakout + Volumen-Spike) sind gleichzeitig erfüllt. Ein Signal mit hoher technischer Relevanz.
         
         ### 4. Technische Hinweise
-        Alle Daten werden via Yahoo Finance bezogen. Die Berechnung erfolgt in Echtzeit auf Basis der letzten 6 Monate.
-        </div>
-        """, unsafe_allow_html=True)
+        Die Daten werden in Echtzeit via Yahoo Finance API bezogen. Bitte beachte, dass dies ein technisches Analysetool ist und keine Anlageberatung darstellt.
+        """)
 
     @st.cache_data(ttl=3600)
     def fetch_tickers():
